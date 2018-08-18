@@ -95,10 +95,10 @@ bool probeValueReceived = true;
 void presentation()  
 { 
   // Send the sketch version information to the gateway
-  sendSketchInfo("Moisture", "1.4.2");
+  sendSketchInfo("Moisture", "1.4.3");
 
   // Register all sensors to gw (they will be created as child devices)
-  present(CHILD_VALUE_ID, S_MOISTURE); // Probe value
+  present(CHILD_VALUE_ID, S_MOISTURE, "Moisture", true); // Probe value
 }
 
 /**
@@ -154,6 +154,9 @@ void receive(const MyMessage &message)
   if (message.sensor == CHILD_VALUE_ID && message.isAck()) {
     // Ok, remove flag, value has been successfully received by server
     probeValueReceived = true;
+    #ifdef MY_DEBUG
+    Serial.println("Server received probe value.");
+    #endif
   }
 }
 
@@ -216,7 +219,7 @@ bool processMoisture()
     // Send probe value if it changed since the last measurement or if we didn't send an update for n times
     lastProbeValue = probeValue;
     // Reset no updates counter
-    cycleCpt = 0;
+    cycleCpt = 1;
     r = true;
     // Before send, flag to indicate that server confirmation need to be received
     probeValueReceived = false;
@@ -225,13 +228,16 @@ bool processMoisture()
     Serial.println("Send value to server");
     #endif
     send(messageValue.set(probeValue), true);
-    // Wait for server response
-    wait(1000); // 1s
   } else {
     // Increase no update counter if the probe value stayed the same
     cycleCpt++;
   }
 
+  // If data has been sended to server, wait for ack confirmation
+  if (r) {
+      wait(1000); // 1s    
+  }
+  
   return r;
 }
 
