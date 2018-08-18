@@ -77,10 +77,8 @@
 //
 // Node childs id (local to node)
 #define CHILD_VALUE_ID 0
-#define CHILD_RESET_ID 1
 // Message which contain probe value
 MyMessage messageValue(CHILD_VALUE_ID, V_LEVEL);
-MyMessage messageReset(CHILD_RESET_ID, V_STATUS);
 // Battery gauge
 MAX17043 batteryGauge;
 
@@ -89,6 +87,7 @@ int lastProbeValue;
 uint16_t cycleCpt;
 uint16_t batteryLowCpt;
 uint16_t cycleCptReset;
+bool probeValueReceived = true;
 
 /**
  * Init node to gateway
@@ -96,11 +95,10 @@ uint16_t cycleCptReset;
 void presentation()  
 { 
   // Send the sketch version information to the gateway
-  sendSketchInfo("Moisture", "1.4.1");
+  sendSketchInfo("Moisture", "1.4.2");
 
   // Register all sensors to gw (they will be created as child devices)
   present(CHILD_VALUE_ID, S_MOISTURE); // Probe value
-  present(CHILD_RESET_ID, S_BINARY);   // Reset command
 }
 
 /**
@@ -131,13 +129,11 @@ void setup()
  */
 void loop()      
 {  
-  // Battery
-  processBattery();
+  // Probe value: If value send to server, allow to send others values
+  bool allowSend = processMoisture();
   
-  // Probe value: If value has been sended, take the opportunity to check reset from server
-  if (processMoisture()) {
-    processCheckResetFromServer();
-  }
+  // Battery
+  processBattery(allowSend);
 
   // Reset
   processReset();
@@ -150,24 +146,14 @@ void loop()
 }
 
 /**
- * When receive message
+ * Receive message
  */
 void receive(const MyMessage &message)
 {
-  // Expect one type of message from gateway. Check it
-  if (
-    message.sensor == CHILD_RESET_ID && 
-    message.type == V_STATUS
-  ) {
-    #ifdef MY_DEBUG
-    Serial.print("Message received. Require for reset: ");
-    Serial.println(message.getBool());
-    #endif
-    // If reset requested
-    if (message.getBool()) {
-      // Restart node
-      restart();
-    }
+  // ACK to confirm that probe value right received
+  if (message.sensor == CHILD_VALUE_ID && message.isAck()) {
+    // Ok, remove flag, value has been successfully received by server
+    probeValueReceived = true;
   }
 }
 
@@ -176,7 +162,7 @@ void receive(const MyMessage &message)
  */
 void restart()
 {
-  doRestart(false);
+  doRestart(true);
 }
 /**
  * Do restart
@@ -190,13 +176,15 @@ void doRestart(bool software)
   Serial.println("Restart node");
   #endif
 
-  // Before restart, set reset value to off
-  send(messageReset.set(false));
+  cycleCptReset = 0;
 
   // Restart software
   if (software) {
+    /*
     wdt_enable(WDTO_15MS);
     while(1) {}
+    */
+    asm volatile ("  jmp 0");
   }
   // Restart hardware
   else {
@@ -224,16 +212,21 @@ bool processMoisture()
   Serial.print(probeValue);
   Serial.println("%");
   #endif
-  if (probeValue != lastProbeValue || cycleCpt == FORCE_SEND_AFTER_N_CYCLE) {
+  if (probeValue != lastProbeValue || cycleCpt == FORCE_SEND_AFTER_N_CYCLE || !probeValueReceived) {
     // Send probe value if it changed since the last measurement or if we didn't send an update for n times
     lastProbeValue = probeValue;
     // Reset no updates counter
     cycleCpt = 0;
     r = true;
+    // Before send, flag to indicate that server confirmation need to be received
+    probeValueReceived = false;
+    // Send value to server
     #ifdef MY_DEBUG
     Serial.println("Send value to server");
     #endif
-    send(messageValue.set(probeValue));
+    send(messageValue.set(probeValue), true);
+    // Wait for server response
+    wait(1000); // 1s
   } else {
     // Increase no update counter if the probe value stayed the same
     cycleCpt++;
@@ -266,8 +259,10 @@ void initBattery()
  * Process to read battery and send level
  * 
  * If battery level lower than limit, inter into deep sleep mode!
+ * 
+ * @param bool allowSend Allow to send battery level to server
  */
-void processBattery()
+void processBattery(bool allowSend)
 {
   #ifdef BATTERY_ON
   
@@ -277,7 +272,12 @@ void processBattery()
   Serial.print(batteryLevel);
   Serial.println("%");
   #endif
-  sendBatteryLevel(batteryLevel);
+
+  // Send battery level to server
+  if (allowSend) {
+    sendBatteryLevel(batteryLevel);
+  }
+  
   // If lower that battery low limit, waiting for n consecutive check
   if (batteryLevel < BATTERY_LOW_LIMIT) {
     batteryLowCpt++;
@@ -285,6 +285,7 @@ void processBattery()
   } else {
     batteryLowCpt = 0;
   }
+  
   // If battery low confirmed
   if (batteryLowCpt >= SEND_BATTERY_LOW_AFTER_N_CYCLE) {
     batteryLowCpt = 0;
@@ -311,15 +312,5 @@ void processReset()
     restart();
     // Below restart(): Never executed
   }
-}
-
-/**
- * Process a check reset order from server
- */
-void processCheckResetFromServer()
-{
-  // Retrieve reset value from gateways (if order to restard has been sended)
-  request(CHILD_RESET_ID, V_STATUS, 0);
-  wait(1000); // Waiting for answer
 }
 
